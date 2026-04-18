@@ -23,10 +23,30 @@ import com.kurinna.hivesensemobile.navigation.HomeViewModel
 import com.kurinna.hivesensemobile.ui.theme.HiveSenseMobileTheme
 import com.kurinna.hivesensemobile.users.UsersViewModel
 import kotlinx.coroutines.launch
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import android.util.Log
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
+import com.google.firebase.messaging.FirebaseMessaging
+import com.kurinna.hivesensemobile.network.ApiClient
+import com.kurinna.hivesensemobile.network.SaveFcmTokenRequest
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
+    private val requestNotificationPermission = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        Log.d("FCM", "Notification permission granted: $isGranted")
+    }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        askNotificationPermission()
+        fetchFcmToken()
 
         val sessionManager = SessionManager(applicationContext)
 
@@ -51,12 +71,17 @@ class MainActivity : ComponentActivity() {
                 LaunchedEffect(savedToken) {
                     isLoggedIn = !savedToken.isNullOrBlank()
                     SessionHolder.accessToken = savedToken
+
+                    if (!savedToken.isNullOrBlank()) {
+                        fetchFcmToken()
+                    }
                 }
 
                 LaunchedEffect(loginSuccess, accessToken) {
                     if (loginSuccess && !accessToken.isNullOrBlank()) {
                         sessionManager.saveAccessToken(accessToken!!)
                         SessionHolder.accessToken = accessToken
+                        fetchFcmToken()
                         isLoggedIn = true
                         currentScreen = "home"
                     }
@@ -130,5 +155,45 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+    private fun askNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (
+                ContextCompat.checkSelfPermission(
+                    this,
+                    Manifest.permission.POST_NOTIFICATIONS
+                ) != PackageManager.PERMISSION_GRANTED
+            ) {
+                requestNotificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
+    }
+
+    private fun fetchFcmToken() {
+        FirebaseMessaging.getInstance().token
+            .addOnCompleteListener { task ->
+                if (!task.isSuccessful) {
+                    Log.e("FCM", "Fetching FCM token failed", task.exception)
+                    return@addOnCompleteListener
+                }
+
+                val token = task.result
+                Log.d("FCM", "FCM token: $token")
+
+                if (!SessionHolder.accessToken.isNullOrBlank()) {
+                    CoroutineScope(Dispatchers.IO).launch {
+                        try {
+                            ApiClient.usersApi.saveMyFcmToken(
+                                SaveFcmTokenRequest(fcmToken = token)
+                            )
+                            Log.d("FCM", "FCM token sent to backend successfully")
+                        } catch (e: Exception) {
+                            Log.e("FCM", "Failed to send FCM token to backend", e)
+                        }
+                    }
+                } else {
+                    Log.d("FCM", "JWT token is missing, FCM token was not sent yet")
+                }
+            }
     }
 }
